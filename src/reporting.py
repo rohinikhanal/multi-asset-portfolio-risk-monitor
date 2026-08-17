@@ -25,6 +25,7 @@ def build_markdown_report(
     stress_results: pd.DataFrame,
     source_metadata: dict[str, str],
     confidence: float,
+    benchmark_name: str,
 ) -> str:
     """Return an interview-ready management report."""
 
@@ -54,6 +55,7 @@ Generated: {generated}
 ## Executive summary
 
 - Synthetic portfolio capital: {_money(capital_usd)}
+- Selected benchmark: {benchmark_name}
 - Annualized portfolio return: {_percent(performance['annual_return'])}
 - Annualized benchmark return: {_percent(performance['benchmark_return'])}
 - Annualized volatility: {_percent(performance['annual_volatility'])}
@@ -92,9 +94,10 @@ Generated: {generated}
 Portfolio returns assume daily constant weights and exclude fees, taxes, bid-ask spreads,
 market impact and rebalancing costs. VaR and Expected Shortfall are one-day estimates from
 the latest {int(risk['lookback_days'])} portfolio P&L observations. Backtest estimates use
-only information available before each test day. Stress scenarios are instantaneous,
-deterministic full-portfolio shocks and are not directly comparable to one-day VaR.
+only information available before each test day. Return contributions are calculated daily
+and linked to reconcile with compounded constant-weight portfolio return. Stress scenarios
+map every position through its asset class, require full coverage, and apply instantaneous,
+deterministic shocks that are not directly comparable to one-day VaR.
 The portfolio is synthetic and the public price feed has no production service guarantee.
 This educational output is not investment advice or a regulatory risk report.
 """
-

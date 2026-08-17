@@ -2,7 +2,6 @@ symbol,asset_name,asset_class,target_weight
 SPY,U.S. large-cap equity,Equity,0.30
 EFA,Developed markets ex-U.S.,Equity,0.20
 IEF,U.S. Treasury bonds,Fixed income,0.20
-GLD,Gold,Commodity,0.10
+GLD,Gold,Gold,0.10
 VNQ,U.S. listed real estate,Real estate,0.10
 DBC,Broad commodities,Commodity,0.10
-

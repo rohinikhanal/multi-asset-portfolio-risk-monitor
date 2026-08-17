@@ -19,14 +19,17 @@ trading-analyst, asset-management, model-validation, and data-analyst applicatio
 - Separates synthetic company data from published market observations.
 - Retrieves adjusted daily prices for equity, fixed-income, commodity, and real-estate
   proxies.
-- Compares the portfolio with an S&P 500 proxy rather than presenting returns alone.
+- Supports SPY, ACWI, VT, a constant-weight 60/40 comparator, or any user-defined
+  market ticker as the benchmark.
 - Measures annualized return, volatility, Sharpe ratio, beta, tracking error,
   information ratio, and maximum drawdown.
-- Attributes period return and portfolio variance contribution by asset.
+- Links daily return contributions so they reconcile exactly with the compounded
+  constant-weight portfolio return, and estimates portfolio variance contribution.
 - Calculates one-day Historical VaR and Expected Shortfall.
 - Runs a rolling 90-day out-of-sample VaR backtest without using the test-day P&L in
   its own forecast.
-- Separates one-day VaR from instantaneous full-portfolio stress scenarios.
+- Separates one-day VaR from instantaneous full-portfolio stress scenarios and maps
+  shocks by asset class, not by hardcoded ticker.
 - Validates weights, symbols, price coverage, duplicate dates, non-positive prices,
   extreme returns, and minimum history.
 - Produces a downloadable Markdown management report.
@@ -88,6 +91,38 @@ Requirements:
 - `target_weight` must be numeric and non-negative.
 - weights must sum to `1.0`.
 - each symbol must appear once.
+- `asset_class` must map to one of the supported scenario classes shown below. Common
+  aliases such as `Stocks`, `Bonds`, `Commodities`, and `REITs` are normalized.
+
+Supported stress classes:
+
+```text
+Equity
+Fixed income
+Commodity
+Gold
+Real estate
+Crypto
+Cash
+```
+
+Unknown classes are rejected with a clear validation error. They are never silently
+assigned a zero shock.
+
+## Benchmark selection
+
+The sidebar supports:
+
+- **SPY** — S&P 500 ETF proxy.
+- **ACWI** — global-equity ETF proxy.
+- **VT** — total-world-equity ETF proxy.
+- **60/40** — constant daily weights of 60% SPY and 40% IEF.
+- **User-defined ticker** — any symbol available from the selected market-data source,
+  such as `^GDAXI` for a German-equity index proxy.
+
+All benchmark-relative statistics and charts use the selected comparator. Composite
+benchmark returns are calculated with the same constant-weight convention as the
+portfolio.
 
 ## Dashboard pages
 
@@ -95,7 +130,8 @@ Requirements:
 2. **Performance & benchmark** — Sharpe, beta, tracking error, information ratio,
    wealth index, drawdown, and correlations.
 3. **Risk & stress** — one-day VaR/ES, rolling backtest and deterministic scenarios.
-4. **Allocation & attribution** — weights, return contribution and variance contribution.
+4. **Allocation & attribution** — weights, exactly linked return contribution and
+   variance contribution.
 5. **Data quality** — control status, critical failures, warnings and detailed evidence.
 6. **Methodology** — formulas, horizons, provenance, assumptions and limitations.
 
@@ -126,6 +162,20 @@ weight(i) × [covariance matrix × weights](i) / portfolio variance
 
 Contributions may be negative when an asset provides covariance diversification.
 
+### Linked return contribution
+
+For each asset and day:
+
+```text
+daily contribution(i,t) = weight(i) × asset return(i,t)
+```
+
+Each daily contribution is multiplied by all subsequent portfolio wealth factors and
+then summed through time. This linking method makes the asset contributions reconcile
+exactly with the compounded return of the daily constant-weight portfolio. The table
+also shows each asset's standalone compounded return for context, but does not mistake
+that buy-and-hold figure for portfolio attribution.
+
 ### Rolling out-of-sample VaR
 
 For every test day:
@@ -146,9 +196,11 @@ The displayed current VaR and Expected Shortfall use the latest 90 daily P&Ls.
 
 ### Stress horizon
 
-Stress tests apply simultaneous, instantaneous shocks to every asset proxy. A full
-cross-asset stress loss and a one-day VaR answer different questions and are not
-presented as equivalent exposure measures.
+Stress tests apply simultaneous, instantaneous shocks to every position through its
+canonical asset class. The dashboard displays the class-shock matrix, position-level
+P&L contribution, and a required 100% coverage indicator. A full cross-asset stress loss
+and a one-day VaR answer different questions and are not presented as equivalent
+exposure measures.
 
 ## Testing
 
@@ -158,8 +210,9 @@ Run:
 python -m unittest discover -s tests -v
 ```
 
-Tests cover market-response parsing, portfolio analytics, VaR look-ahead prevention,
-stress aggregation, and data-quality controls.
+Tests cover market-response parsing, selectable benchmarks, exact return-attribution
+reconciliation, VaR look-ahead prevention, arbitrary-ticker asset-class stress
+aggregation, and data-quality controls.
 
 ## Project structure
 
@@ -172,6 +225,8 @@ multi-asset-portfolio-risk-monitor/
 │   └── portfolio.csv
 ├── src/
 │   ├── config.py
+│   ├── asset_classes.py
+│   ├── benchmark.py
 │   ├── data_loader.py
 │   ├── data_quality.py
 │   ├── demo_data.py
@@ -217,4 +272,3 @@ multi-asset-portfolio-risk-monitor/
 
 MIT License. See `LICENSE`. Market observations remain subject to their data provider's
 terms and are not covered by the software license.
-

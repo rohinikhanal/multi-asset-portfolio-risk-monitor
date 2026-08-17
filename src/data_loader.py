@@ -7,6 +7,8 @@ from typing import IO
 
 import pandas as pd
 
+from .asset_classes import normalize_asset_class
+
 PORTFOLIO_COLUMNS = {"symbol", "asset_name", "asset_class", "target_weight"}
 
 
@@ -26,7 +28,6 @@ def prepare_portfolio(portfolio: pd.DataFrame) -> pd.DataFrame:
     result = portfolio.copy()
     result["symbol"] = result["symbol"].astype(str).str.strip().str.upper()
     result["asset_name"] = result["asset_name"].astype(str).str.strip()
-    result["asset_class"] = result["asset_class"].astype(str).str.strip()
+    result["asset_class"] = result["asset_class"].map(normalize_asset_class)
     result["target_weight"] = pd.to_numeric(result["target_weight"], errors="coerce")
     return result
-

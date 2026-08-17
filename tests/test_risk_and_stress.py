@@ -3,7 +3,7 @@ import unittest
 import pandas as pd
 
 from src.risk_metrics import expected_shortfall, historical_var, risk_summary, rolling_var_backtest
-from src.stress_testing import run_stress_tests
+from src.stress_testing import run_stress_tests, stress_position_detail
 
 
 class RiskAndStressTests(unittest.TestCase):
@@ -26,17 +26,59 @@ class RiskAndStressTests(unittest.TestCase):
         self.assertEqual(result["backtest_observations"], 30.0)
 
     def test_stress_base_market_has_zero_impact(self) -> None:
-        weights = pd.Series({"SPY": 0.5, "IEF": 0.5})
-        result = run_stress_tests(weights, 1_000_000)
+        portfolio = pd.DataFrame(
+            {
+                "symbol": ["AAPL", "TLT"],
+                "asset_name": ["Apple", "Treasury bond ETF"],
+                "asset_class": ["Equity", "Fixed income"],
+                "target_weight": [0.5, 0.5],
+            }
+        )
+        result = run_stress_tests(portfolio, 1_000_000)
         base = result[result["scenario"].eq("Base market")].iloc[0]
         self.assertEqual(float(base["portfolio_pnl_usd"]), 0.0)
 
     def test_stress_table_contains_loss_scenario(self) -> None:
-        weights = pd.Series({"SPY": 0.6, "IEF": 0.4})
-        result = run_stress_tests(weights, 1_000_000)
+        portfolio = pd.DataFrame(
+            {
+                "symbol": ["AAPL", "TLT"],
+                "asset_name": ["Apple", "Treasury bond ETF"],
+                "asset_class": ["Equity", "Fixed income"],
+                "target_weight": [0.6, 0.4],
+            }
+        )
+        result = run_stress_tests(portfolio, 1_000_000)
         self.assertLess(float(result["portfolio_pnl_usd"].min()), 0.0)
+
+    def test_custom_tickers_receive_asset_class_shocks(self) -> None:
+        portfolio = pd.DataFrame(
+            {
+                "symbol": ["AAPL", "MSFT", "JPM", "TLT", "SLV"],
+                "asset_name": ["Apple", "Microsoft", "JPMorgan", "Treasuries", "Silver"],
+                "asset_class": ["Equity", "Equity", "Equity", "Fixed income", "Commodity"],
+                "target_weight": [0.2] * 5,
+            }
+        )
+        result = run_stress_tests(portfolio, 1_000_000)
+        risk_off = result[result["scenario"].eq("Global risk-off")].iloc[0]
+        expected_return = 0.6 * -0.20 + 0.2 * 0.05 + 0.2 * -0.10
+        self.assertAlmostEqual(float(risk_off["portfolio_return_pct"]), 100 * expected_return)
+        self.assertEqual(float(risk_off["coverage_pct"]), 100.0)
+        detail = stress_position_detail(portfolio, 1_000_000, "Global risk-off")
+        self.assertEqual(len(detail), 5)
+
+    def test_unsupported_asset_class_is_not_silently_ignored(self) -> None:
+        portfolio = pd.DataFrame(
+            {
+                "symbol": ["XYZ"],
+                "asset_name": ["Unknown asset"],
+                "asset_class": ["Collectible"],
+                "target_weight": [1.0],
+            }
+        )
+        with self.assertRaisesRegex(ValueError, "Unsupported asset class"):
+            run_stress_tests(portfolio, 1_000_000)
 
 
 if __name__ == "__main__":
     unittest.main()
-

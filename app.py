@@ -8,9 +8,13 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
+from src.asset_classes import SUPPORTED_ASSET_CLASSES
+from src.benchmark import (
+    BENCHMARK_OPTIONS,
+    CUSTOM_BENCHMARK_OPTION,
+    resolve_benchmark,
+)
 from src.config import (
-    BENCHMARK_NAME,
-    BENCHMARK_SYMBOL,
     DEFAULT_CAPITAL_USD,
     DEFAULT_PORTFOLIO_PATH,
     VAR_LOOKBACK_DAYS,
@@ -31,7 +35,11 @@ from src.portfolio_analytics import (
 )
 from src.reporting import build_markdown_report
 from src.risk_metrics import risk_summary, rolling_var_backtest
-from src.stress_testing import run_stress_tests
+from src.stress_testing import (
+    run_stress_tests,
+    stress_assumption_table,
+    stress_position_detail,
+)
 
 
 st.set_page_config(
@@ -99,6 +107,16 @@ with st.sidebar:
         "Portfolio source",
         ["Bundled synthetic portfolio", "Upload portfolio CSV"],
     )
+    benchmark_selection = st.selectbox(
+        "Benchmark",
+        [*BENCHMARK_OPTIONS.keys(), CUSTOM_BENCHMARK_OPTION],
+        help="Choose a market proxy, a constant-weight 60/40 comparator, or any supported ticker.",
+    )
+    custom_benchmark_ticker = (
+        st.text_input("Benchmark ticker", placeholder="Example: ^GDAXI")
+        if benchmark_selection == CUSTOM_BENCHMARK_OPTION
+        else ""
+    )
     history_years = st.select_slider("Market history", options=[2, 3, 4, 5], value=3)
     capital_usd = st.number_input(
         "Synthetic capital (USD)",
@@ -125,6 +143,10 @@ with st.sidebar:
 
 
 try:
+    benchmark_definition = resolve_benchmark(benchmark_selection, custom_benchmark_ticker)
+    benchmark_symbols = list(benchmark_definition.components)
+    benchmark_reference_symbol = benchmark_definition.primary_symbol
+    benchmark_name = benchmark_definition.name
     write_demo_portfolio()
     if portfolio_source == "Upload portfolio CSV":
         if portfolio_upload is None:
@@ -137,7 +159,7 @@ try:
 
     end_date = date.today() - pd.Timedelta(days=1)
     start_date = end_date - pd.DateOffset(years=history_years)
-    symbols = list(dict.fromkeys([BENCHMARK_SYMBOL, *portfolio["symbol"].tolist()]))
+    symbols = list(dict.fromkeys([*benchmark_symbols, *portfolio["symbol"].tolist()]))
     with st.spinner("Retrieving published cross-asset prices..."):
         prices, source_metadata = load_market_prices(
             tuple(symbols), start_date.date().isoformat(), end_date.isoformat()
@@ -148,11 +170,11 @@ try:
         portfolio.loc[portfolio.index[0], "target_weight"] -= 0.05
         prices = prices.copy()
         issue_symbol = portfolio["symbol"].iloc[min(1, len(portfolio) - 1)]
-        issue_dates = prices.index[prices[BENCHMARK_SYMBOL].notna()]
+        issue_dates = prices.index[prices[benchmark_reference_symbol].notna()]
         if len(issue_dates):
             prices.loc[issue_dates[len(issue_dates) // 2], issue_symbol] = np.nan
 
-    quality_results = run_data_quality_checks(portfolio, prices, BENCHMARK_SYMBOL)
+    quality_results = run_data_quality_checks(portfolio, prices, benchmark_symbols)
     score = quality_score(quality_results)
     overall_status = overall_quality_status(quality_results)
     failure_count = int(quality_results["status"].eq("FAIL").sum())
@@ -163,22 +185,30 @@ try:
     weights = weight_series(portfolio)
     asset_returns = all_returns[weights.index]
     portfolio_returns = calculate_portfolio_returns(asset_returns, weights)
-    benchmark_returns = all_returns[BENCHMARK_SYMBOL].rename("benchmark_return")
+    benchmark_weights = pd.Series(benchmark_definition.components, dtype=float)
+    benchmark_weights = benchmark_weights / benchmark_weights.sum()
+    benchmark_returns = calculate_portfolio_returns(
+        all_returns[benchmark_weights.index], benchmark_weights
+    ).rename("benchmark_return")
     performance = performance_summary(portfolio_returns, benchmark_returns, risk_free_rate)
     daily_pnl = (float(capital_usd) * portfolio_returns).rename("daily_pnl_usd")
     risk = risk_summary(daily_pnl, confidence, VAR_LOOKBACK_DAYS)
     backtest = rolling_var_backtest(daily_pnl, confidence, VAR_LOOKBACK_DAYS)
-    stresses = run_stress_tests(weights, float(capital_usd))
+    stresses = run_stress_tests(portfolio, float(capital_usd))
     risk_contributions = risk_contribution(asset_returns, weights).merge(
         portfolio[["symbol", "asset_name", "asset_class"]], on="symbol", how="left"
     )
     return_contributions = return_contribution(asset_returns, weights).merge(
         portfolio[["symbol", "asset_name", "asset_class"]], on="symbol", how="left"
     )
+    portfolio_period_return_pct = 100 * float((1 + portfolio_returns).prod() - 1)
+    attributed_period_return_pct = float(
+        return_contributions["linked_return_contribution_pct"].sum()
+    )
     indexed_performance = pd.concat(
         [
             wealth_index(portfolio_returns, 100).rename("Synthetic portfolio"),
-            wealth_index(benchmark_returns, 100).rename(BENCHMARK_NAME),
+            wealth_index(benchmark_returns, 100).rename(benchmark_name),
         ],
         axis=1,
     ).dropna()
@@ -195,7 +225,8 @@ st.markdown(
     <div class="source-note">
     <strong>Data separation:</strong> company allocation is synthetic; market prices are published adjusted closes
     from <a href="{source_metadata['source_url']}" target="_blank">{source_metadata['source_name']}</a>.
-    Period: {source_metadata['first_date']} to {source_metadata['last_date']}. Retrieved {source_metadata['retrieved_at']}.
+    Benchmark: {benchmark_name}. Period: {source_metadata['first_date']} to {source_metadata['last_date']}.
+    Retrieved {source_metadata['retrieved_at']}.
     </div>
     """,
     unsafe_allow_html=True,
@@ -262,6 +293,7 @@ with overview_tab:
         stresses,
         source_metadata,
         confidence,
+        benchmark_name,
     )
     st.download_button(
         "Download portfolio risk report",
@@ -325,17 +357,54 @@ with risk_tab:
 
     st.markdown("#### Deterministic instantaneous stress scenarios")
     st.caption(
-        "Stress scenarios apply simultaneous one-time shocks across all asset proxies. "
-        "This horizon differs from one-day VaR and the values should not be treated as equivalent measures."
+        "Every position is mapped through its asset class, so uploaded tickers receive a scenario shock "
+        "without ticker-specific hardcoding. Coverage must be 100%. This instantaneous horizon differs "
+        "from one-day VaR and the values should not be treated as equivalent measures."
     )
     st.dataframe(
         stresses,
         width="stretch",
         hide_index=True,
         column_config={
-            "portfolio_return_pct": st.column_config.NumberColumn(format="%.2f%%"),
-            "portfolio_pnl_usd": st.column_config.NumberColumn(format="US$ %.2f"),
-            "stressed_value_usd": st.column_config.NumberColumn(format="US$ %.2f"),
+            "portfolio_return_pct": st.column_config.NumberColumn(
+                "Portfolio return", format="%.2f%%"
+            ),
+            "portfolio_pnl_usd": st.column_config.NumberColumn(
+                "Portfolio P&L", format="US$ %.2f"
+            ),
+            "stressed_value_usd": st.column_config.NumberColumn(
+                "Stressed value", format="US$ %.2f"
+            ),
+            "coverage_pct": st.column_config.NumberColumn("Coverage", format="%.2f%%"),
+        },
+    )
+
+    with st.expander("View asset-class shock assumptions"):
+        st.dataframe(
+            stress_assumption_table(),
+            width="stretch",
+            hide_index=True,
+            column_config={
+                asset_class: st.column_config.NumberColumn(format="%.1f%%")
+                for asset_class in SUPPORTED_ASSET_CLASSES
+            },
+        )
+
+    detail_scenario = st.selectbox(
+        "Position-level stress detail",
+        stresses["scenario"].tolist(),
+        index=1,
+    )
+    st.dataframe(
+        stress_position_detail(portfolio, float(capital_usd), detail_scenario),
+        width="stretch",
+        hide_index=True,
+        column_config={
+            "weight_pct": st.column_config.NumberColumn("Weight", format="%.2f%%"),
+            "shock_pct": st.column_config.NumberColumn("Scenario shock", format="%.2f%%"),
+            "pnl_contribution_usd": st.column_config.NumberColumn(
+                "P&L contribution", format="US$ %.2f"
+            ),
         },
     )
 
@@ -351,12 +420,19 @@ with allocation_tab:
         risk_chart = risk_contributions.set_index("asset_name")[["risk_contribution_pct"]]
         st.bar_chart(risk_chart, color="#D64550", height=320)
     with right:
-        st.markdown("#### Weighted period-return contribution")
-        return_chart = return_contributions.set_index("asset_name")[["weighted_return_contribution_pct"]]
+        st.markdown("#### Linked return contribution")
+        return_chart = return_contributions.set_index("asset_name")[["linked_return_contribution_pct"]]
+        return_chart.columns = ["Linked contribution (%)"]
         st.bar_chart(return_chart, color="#18A999", height=320)
 
+    st.caption(
+        "Daily contributions (weight × daily asset return) are linked through subsequent portfolio "
+        f"wealth. Contributions sum to {attributed_period_return_pct:.4f}% versus the calculated "
+        f"daily-rebalanced portfolio return of {portfolio_period_return_pct:.4f}%."
+    )
+
     attribution = risk_contributions.merge(
-        return_contributions[["symbol", "asset_period_return_pct", "weighted_return_contribution_pct"]],
+        return_contributions[["symbol", "asset_period_return_pct", "linked_return_contribution_pct"]],
         on="symbol",
         how="left",
     )
@@ -368,20 +444,23 @@ with allocation_tab:
                 "asset_class",
                 "weight_pct",
                 "asset_period_return_pct",
-                "weighted_return_contribution_pct",
+                "linked_return_contribution_pct",
                 "risk_contribution_pct",
             ]
         ],
         width="stretch",
         hide_index=True,
         column_config={
-            column: st.column_config.NumberColumn(format="%.2f%%")
-            for column in [
-                "weight_pct",
-                "asset_period_return_pct",
-                "weighted_return_contribution_pct",
-                "risk_contribution_pct",
-            ]
+            "weight_pct": st.column_config.NumberColumn("Weight", format="%.2f%%"),
+            "asset_period_return_pct": st.column_config.NumberColumn(
+                "Standalone asset period return", format="%.2f%%"
+            ),
+            "linked_return_contribution_pct": st.column_config.NumberColumn(
+                "Linked portfolio return contribution", format="%.2f%%"
+            ),
+            "risk_contribution_pct": st.column_config.NumberColumn(
+                "Portfolio variance contribution", format="%.2f%%"
+            ),
         },
     )
 
@@ -416,16 +495,23 @@ with methodology_tab:
 
         **Benchmark and performance**
 
-        - {BENCHMARK_NAME} (`{BENCHMARK_SYMBOL}`) is the benchmark.
+        - The selected comparator is {benchmark_name}; its market component(s) are {', '.join(benchmark_symbols)}.
         - Sharpe ratio uses the selected annual risk-free assumption of {risk_free_rate:.2%}.
         - Tracking error and information ratio use daily active returns annualized with 252 trading days.
         - Risk contribution uses the sample covariance matrix and component contribution to portfolio variance.
+
+        **Return attribution**
+
+        - Daily asset contribution equals strategic weight multiplied by that day's asset return.
+        - Daily contributions are linked through all subsequent portfolio wealth factors.
+        - The linked asset contributions reconcile exactly with the compounded constant-weight portfolio return.
 
         **Risk horizons**
 
         - Historical VaR and Expected Shortfall are one-day measures estimated from the previous {VAR_LOOKBACK_DAYS} daily P&Ls.
         - Backtesting is rolling and out of sample.
-        - Stress tests are instantaneous, deterministic cross-asset shocks and are not directly comparable with one-day VaR.
+        - Stress tests map every ticker to its uploaded asset class, require 100% scenario coverage, and apply
+          instantaneous deterministic shocks that are not directly comparable with one-day VaR.
 
         **Data provenance**
 
@@ -441,4 +527,3 @@ with methodology_tab:
         - Results are educational and must not be used for investment decisions or regulatory reporting.
         """
     )
-

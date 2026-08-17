@@ -50,7 +50,19 @@ class DataQualityTests(unittest.TestCase):
         self.assertEqual(overall_quality_status(result), "WARN")
         self.assertLess(quality_score(result), 100.0)
 
+    def test_unsupported_stress_asset_class_fails_control(self) -> None:
+        broken = self.portfolio.copy()
+        broken.loc[0, "asset_class"] = "Collectible"
+        result = run_data_quality_checks(broken, self.prices, "SPY")
+        row = result[result["check"].eq("Stress asset-class coverage")].iloc[0]
+        self.assertEqual(row["status"], "FAIL")
+
+    def test_composite_benchmark_components_are_checked(self) -> None:
+        prices = self.prices.assign(ACWI=self.prices["SPY"])
+        result = run_data_quality_checks(self.portfolio, prices, ["ACWI", "IEF"])
+        row = result[result["check"].eq("Required price series")].iloc[0]
+        self.assertEqual(row["status"], "PASS")
+
 
 if __name__ == "__main__":
     unittest.main()
-

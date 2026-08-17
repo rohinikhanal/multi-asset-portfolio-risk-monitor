@@ -134,15 +134,26 @@ def risk_contribution(asset_returns: pd.DataFrame, weights: pd.Series) -> pd.Dat
 
 
 def return_contribution(asset_returns: pd.DataFrame, weights: pd.Series) -> pd.DataFrame:
-    """Return weighted buy-and-hold period-return contributions by asset."""
+    """Link daily contributions to exactly reconcile constant-weight period return.
 
-    period_returns = (1 + asset_returns[weights.index]).prod() - 1
-    contribution = period_returns * weights
+    On each day, an asset contributes ``weight * asset return`` to portfolio return.
+    That contribution is then grown by all subsequent portfolio return factors. The
+    linked contributions therefore sum to the portfolio's compounded period return.
+    """
+
+    selected = asset_returns[weights.index]
+    daily_contributions = selected.mul(weights, axis=1)
+    portfolio_returns = daily_contributions.sum(axis=1)
+    factors = 1.0 + portfolio_returns.to_numpy(dtype=float)
+    future_growth = np.ones(len(factors), dtype=float)
+    if len(factors) > 1:
+        future_growth[:-1] = np.cumprod(factors[:0:-1])[::-1]
+    linked = daily_contributions.mul(future_growth, axis=0).sum(axis=0)
+    period_returns = (1.0 + selected).prod() - 1.0
     return pd.DataFrame(
         {
             "symbol": weights.index,
             "asset_period_return_pct": 100 * period_returns.to_numpy(),
-            "weighted_return_contribution_pct": 100 * contribution.to_numpy(),
+            "linked_return_contribution_pct": 100 * linked.to_numpy(),
         }
     )
-

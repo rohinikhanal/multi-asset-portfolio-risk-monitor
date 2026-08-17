@@ -7,6 +7,7 @@ from dataclasses import asdict, dataclass
 import numpy as np
 import pandas as pd
 
+from .asset_classes import SUPPORTED_ASSET_CLASSES
 from .data_loader import PORTFOLIO_COLUMNS
 
 
@@ -57,6 +58,20 @@ def portfolio_checks(portfolio: pd.DataFrame) -> list[CheckResult]:
             "Weights sum to 100%",
             total_break,
             f"Portfolio weights sum to {100 * weight_total:.2f}%.",
+        )
+    )
+
+    unsupported_classes = sorted(
+        set(portfolio.loc[~portfolio["asset_class"].isin(SUPPORTED_ASSET_CLASSES), "asset_class"])
+    )
+    results.append(
+        _result(
+            "Portfolio",
+            "Stress asset-class coverage",
+            len(unsupported_classes),
+            "Every position maps to a supported asset-class scenario."
+            if not unsupported_classes
+            else f"Unsupported classes: {', '.join(unsupported_classes)}.",
         )
     )
     return results
@@ -131,14 +146,19 @@ def market_checks(
 def run_data_quality_checks(
     portfolio: pd.DataFrame,
     prices: pd.DataFrame,
-    benchmark_symbol: str,
+    benchmark_symbols: str | list[str],
 ) -> pd.DataFrame:
     """Run all portfolio and market-data controls."""
 
     results = portfolio_checks(portfolio)
     if PORTFOLIO_COLUMNS.issubset(portfolio.columns):
-        symbols = list(dict.fromkeys([benchmark_symbol, *portfolio["symbol"].tolist()]))
-        results.extend(market_checks(prices, symbols, benchmark_symbol))
+        benchmark_list = (
+            [benchmark_symbols] if isinstance(benchmark_symbols, str) else list(benchmark_symbols)
+        )
+        if not benchmark_list:
+            raise ValueError("At least one benchmark symbol is required for data controls.")
+        symbols = list(dict.fromkeys([*benchmark_list, *portfolio["symbol"].tolist()]))
+        results.extend(market_checks(prices, symbols, benchmark_list[0]))
     return pd.DataFrame([asdict(result) for result in results])
 
 
@@ -158,4 +178,3 @@ def overall_quality_status(results: pd.DataFrame) -> str:
     if "WARN" in statuses:
         return "WARN"
     return "PASS"
-

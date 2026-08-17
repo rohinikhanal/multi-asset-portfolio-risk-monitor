@@ -8,6 +8,7 @@ from src.portfolio_analytics import (
     calculate_returns,
     max_drawdown,
     performance_summary,
+    return_contribution,
     risk_contribution,
     weight_series,
 )
@@ -61,7 +62,18 @@ class PortfolioAnalyticsTests(unittest.TestCase):
         result = risk_contribution(returns, weight_series(self.portfolio))
         self.assertAlmostEqual(float(result["risk_contribution_pct"].sum()), 100.0)
 
+    def test_linked_return_contributions_reconcile_with_portfolio(self) -> None:
+        returns = calculate_returns(self.prices)
+        weights = weight_series(self.portfolio)
+        portfolio_returns = calculate_portfolio_returns(returns, weights)
+        result = return_contribution(returns, weights)
+        expected = 100 * ((1 + portfolio_returns).prod() - 1)
+        self.assertAlmostEqual(
+            float(result["linked_return_contribution_pct"].sum()),
+            float(expected),
+            places=10,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
-
